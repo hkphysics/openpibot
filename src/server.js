@@ -104,9 +104,11 @@ app.post("/webhook", async (req, res) => {
 
   try {
     ({ session } = await createPiSession());
+    const textDeltaFromEvent = createTextDeltaHandler();
     session.subscribe((event) => {
       const delta = textDeltaFromEvent(event);
-      if (delta) output += delta;
+      if (delta.content) output += delta.content;
+      if (delta.reasoning) output += delta.reasoning;
     });
 
     await session.prompt(prompt);
@@ -165,9 +167,11 @@ async function handleBlockingCompletion(req, res, prompt) {
 
   try {
     ({ session } = await createPiSession());
+    const textDeltaFromEvent = createTextDeltaHandler();
     session.subscribe((event) => {
       const delta = textDeltaFromEvent(event);
-      if (delta) output += delta;
+      if (delta.content) output += delta.content;
+      if (delta.reasoning) output += delta.reasoning;
     });
 
     await session.prompt(prompt);
@@ -203,7 +207,15 @@ async function handleStreamingCompletion(req, res, prompt) {
     "X-Accel-Buffering": "no",
   });
 
-  const writeSse = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+  // Disable Nagle's algorithm so small SSE chunks flush immediately
+  if (res.socket && typeof res.socket.setNoDelay === "function") {
+    res.socket.setNoDelay(true);
+  }
+
+  const writeSse = (data) => {
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+    if (typeof res.flush === "function") res.flush();
+  };
   const model = req.body?.model ?? MODEL_ID;
 
   writeSse({
@@ -221,15 +233,17 @@ async function handleStreamingCompletion(req, res, prompt) {
       if (!res.writableEnded) session?.abort?.().catch(() => {});
     });
 
+    const textDeltaFromEvent = createTextDeltaHandler();
     session.subscribe((event) => {
-      const delta = textDeltaFromEvent(event) || progressDeltaFromEvent(event);
-      if (!delta || res.writableEnded) return;
+      const delta = textDeltaFromEvent(event);
+      const progress = progressDeltaFromEvent(event);
+      if ((!delta.content && !delta.reasoning && !progress.content && !progress.reasoning) || res.writableEnded) return;
       writeSse({
         id: completionId,
         object: "chat.completion.chunk",
         created: Math.floor(Date.now() / 1000),
         model,
-        choices: [{ index: 0, delta: { content: delta }, finish_reason: null }],
+        choices: [{ index: 0, delta: { ...(delta.content ? { content: delta.content } : {}), ...(delta.reasoning ? { reasoning: delta.reasoning } : {}), ...(progress.content ? { content: progress.content } : {}), ...(progress.reasoning ? { reasoning: progress.reasoning } : {}) }, finish_reason: null }],
       });
     });
 
@@ -257,31 +271,77 @@ async function handleStreamingCompletion(req, res, prompt) {
   }
 }
 
-function textDeltaFromEvent(event) {
-  if (
-    event?.type === "message_update" &&
-    event.assistantMessageEvent?.type === "text_delta"
-  ) {
-    return event.assistantMessageEvent.delta ?? "";
+function createTextDeltaHandler() {
+  let thinkingOpen = false;
+
+  return function textDeltaFromEvent(event) {
+    if (event?.type !== "message_update") return { content: "", reasoning: "" };
+
+    const ae = event.assistantMessageEvent;
+    if (!ae) return { content: "", reasoning: "" };
+
+    if (ae.type === "thinking_start") {
+      if (thinkingOpen) return { content: "", reasoning: "" };
+      thinkingOpen = true;
+      return { content: "", reasoning: "" };
+    }
+
+    if (ae.type === "thinking_end") {
+      if (!thinkingOpen) return { content: "", reasoning: "" };
+      thinkingOpen = false;
+      return { content: "", reasoning: "" };
+    }
+
+    if (ae.type === "thinking_delta") {
+      if (!thinkingOpen) thinkingOpen = true;
+      return { content: "", reasoning: ae.delta ?? "" };
+    }
+
+    if (ae.type === "text_delta") {
+      thinkingOpen = false;
+      return { content: ae.delta ?? "", reasoning: "" };
+    }
+
+    return { content: "", reasoning: "" };
+  };
+}
+
+function normalizeDelta(delta) {
+  if (typeof delta === "string") return delta;
+  if (delta && typeof delta === "object") {
+    if (typeof delta.content === "string") return delta.content;
+    if (Array.isArray(delta.content)) return delta.content.map((c) => (typeof c === "string" ? c : c?.text ?? "")).join("");
   }
-  return "";
+  return delta != null ? String(delta) : "";
 }
 
 function progressDeltaFromEvent(event) {
-  if (!SHOW_PROGRESS) return "";
+  if (!SHOW_PROGRESS) return { content: "", reasoning: "" };
 
-  if (event?.type === "agent_start") return "\n\n⏳ Pi is working...\n";
-  if (event?.type === "tool_execution_start") {
-    return `\n\n🔧 Running tool: ${event.toolName ?? "unknown"}...\n`;
-  }
-  if (event?.type === "tool_execution_end") {
-    const name = event.toolName ?? "tool";
-    return event.isError ? `\n⚠️ ${name} finished with an error.\n` : `\n✅ ${name} finished.\n`;
-  }
-  if (event?.type === "compaction_start") return "\n\n🧹 Compacting context...\n";
-  if (event?.type === "auto_retry_start") return "\n\n🔁 Retrying request...\n";
+  const PROGRESS_HANDLERS = {
+    agent_start: () => ({ content: "", reasoning: "\n\n⏳ Pi is working...\n"}),
+    compaction_start: () => ({ content: "", reasoning: "\n\n🧹 Compacting context...\n"}),
+    auto_retry_start: () => ({ content: "", reasoning: "\n\n🔁 Retrying request...\n"}),
+    tool_execution_start: (event) => {
+      const cmd = event.args ? JSON.stringify(event.args) : (event.command ?? "");
+      return { content: "", reasoning: `\n\n🔧 Running tool: ${event.toolName ?? "unknown"}${cmd ? " — " + cmd : ""}...\n`};
+    },
+    tool_execution_update: (event) => ({
+      content: "",
+      reasoning: normalizeDelta(event.partialResult ?? ""),
+    }),
+    tool_execution_end: (event) => {
+      const name = event.toolName ?? "tool";
+      const result = event.isError
+        ? `\n\n⚠️ ${name} finished with an error.\n` 
+        : `\n\n✅ ${name} finished.\n`;
 
-  return "";
+      return { content: "", reasoning: result };
+    },
+  };
+
+  const handler = PROGRESS_HANDLERS[event?.type];
+  return handler ? handler(event) : { content: "", reasoning: "" };
 }
 
 function messagesToPrompt(messages) {
