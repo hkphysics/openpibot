@@ -1,10 +1,14 @@
-FROM node:24-bookworm-slim
-
-USER root
+# Multi-stage build: separate build and runtime environments
+FROM node:24-bookworm-slim AS builder
 
 WORKDIR /app
 
-RUN apt-get update \
+# Install system dependencies and build tools (cached layer)
+RUN --mount=type=tmpfs,destination=/tmp \
+    --mount=type=tmpfs,destination=/var/tmp \
+    --mount=type=cache,target=/var/cache,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+   apt-get update \
     && apt-get install -y --no-install-recommends \
       bash \
       python3 \
@@ -16,25 +20,35 @@ RUN apt-get update \
       ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# Install global npm package needed for build
 RUN npm install -g @earendil-works/pi-coding-agent
 
+# Copy package files and install dependencies (cached layer)
 COPY package*.json ./
 RUN npm ci --omit=dev
 
+# Copy application source
 COPY src ./src
 
-RUN mkdir -p /workspace /home/node/.pi/agent \
-    && chown -R node:node /workspace /home/node/.pi
+# Runtime stage - minimal image
+FROM node:24-bookworm-slim
+
+WORKDIR /app
+
+# Copy installed dependencies from builder stage
+COPY --from=builder --chown=pibot:pibot /app/node_modules ./node_modules
+
+# Copy application source
+COPY --from=builder --chown=pibot:pibot /app/src ./src
 
 EXPOSE 11435
 
+# Environment variables
 ENV HOST=0.0.0.0 \
     PORT=11435 \
     PI_WORKSPACE=/workspace \
     PI_TOOLS=read,bash,edit,write,grep,find,ls \
     PI_SHOW_PROGRESS=true \
     HOME=/home/node
-
-SHELL ["/bin/bash", "-lc"]
 
 CMD ["node", "src/server.js"]
