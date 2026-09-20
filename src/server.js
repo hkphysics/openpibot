@@ -108,7 +108,7 @@ app.post("/webhook", async (req, res) => {
     session.subscribe((event) => {
       const delta = textDeltaFromEvent(event);
       if (delta.content) output += delta.content;
-      if (delta.reasoning) output += delta.reasoning;
+      if (delta.reasoning_content) output += delta.reasoning_content;
     });
 
     await session.prompt(prompt);
@@ -171,7 +171,7 @@ async function handleBlockingCompletion(req, res, prompt) {
     session.subscribe((event) => {
       const delta = textDeltaFromEvent(event);
       if (delta.content) output += delta.content;
-      if (delta.reasoning) output += delta.reasoning;
+      if (delta.reasoning_content) output += delta.reasoning_content;
     });
 
     await session.prompt(prompt);
@@ -283,34 +283,46 @@ function createTextDeltaHandler() {
   let thinkingOpen = false;
 
   return function textDeltaFromEvent(event) {
-    if (event?.type !== "message_update") return { content: "", reasoning: "" };
+    // The SDK pushes AssistantMessageEvent directly: {type: "text_start", …}, {type: "thinking_delta", delta: "…"}, etc.
+    // There is NO wrapper {type: "message_update", assistantMessageEvent: …}
+    if (!event || typeof event !== "object") return { content: "", reasoning_content: "" };
 
-    const ae = event.assistantMessageEvent;
-    if (!ae) return { content: "", reasoning: "" };
+    const ae = event.assistantMessageEvent ?? event;
+    if (!ae) return { content: "", reasoning_content: "" };
 
     if (ae.type === "thinking_start") {
-      if (thinkingOpen) return { content: "", reasoning: "" };
+      if (thinkingOpen) return { content: "", reasoning_content: "" };
       thinkingOpen = true;
-      return { content: "", reasoning: "" };
+      return { content: "", reasoning_content: "Thinking...\n" };
     }
 
     if (ae.type === "thinking_end") {
-      if (!thinkingOpen) return { content: "", reasoning: "" };
+      if (!thinkingOpen) return { content: "", reasoning_content: "" };
       thinkingOpen = false;
-      return { content: "", reasoning: "" };
+      return { content: "", reasoning_content: "Thinking done.\n" };
     }
 
     if (ae.type === "thinking_delta") {
       if (!thinkingOpen) thinkingOpen = true;
-      return { content: "", reasoning: ae.delta ?? "" };
+      return { content: "", reasoning_content: ae.delta ?? "" };
+    }
+
+    if (ae.type === "text_start") {
+      thinkingOpen = false;
+      return { content: "", reasoning_content: "" };
     }
 
     if (ae.type === "text_delta") {
       thinkingOpen = false;
-      return { content: ae.delta ?? "", reasoning: "" };
+      return { content: ae.delta ?? "", reasoning_content: "" };
     }
 
-    return { content: "", reasoning: "" };
+    if (ae.type === "text_end") {
+      thinkingOpen = false;
+      return { content: "", reasoning_content: "" };
+    }
+
+    return { content: "", reasoning_content: "" };
   };
 }
 
@@ -324,21 +336,21 @@ function normalizeDelta(delta) {
 }
 
 function progressDeltaFromEvent(event) {
-  if (!SHOW_PROGRESS) return { content: "", reasoning: "" };
+  if (!SHOW_PROGRESS) return { content: "", reasoning_content: "" };
 
   const PROGRESS_HANDLERS = {
-    agent_start: () => ({ content: "", reasoning: "\n\n⏳ Pi is working...\n"}),
-    compaction_start: () => ({ content: "", reasoning: "\n\n🧹 Compacting context...\n"}),
-    auto_retry_start: () => ({ content: "", reasoning: "\n\n🔁 Retrying request...\n"}),
+    agent_start: () => ({ content: "", reasoning_content: "\n\n⏳ Pi is working...\n"}),
+    compaction_start: () => ({ content: "", reasoning_content: "\n\n🧹 Compacting context...\n"}),
+    auto_retry_start: () => ({ content: "", reasoning_content: "\n\n🔁 Retrying request...\n"}),
     tool_execution_start: (event) => {
-      const keyMap = { bash: "command", read: "path", find: "path" };
+      const keyMap = { bash: "command", read: "path", find: "path", ls: "path" };
       const key = keyMap[event.toolName];
       const cmd = key ? event.args?.[key] : JSON.stringify(event.args ?? "");
-      return { content: "", reasoning: `\n\n🔧 Running tool: ${event.toolName ?? "unknown"}${cmd ? " — " + cmd : ""}\n`};
+      return { content: "", reasoning_content: `\n\n🔧 Running tool: ${event.toolName ?? "unknown"}${cmd ? " — " + cmd : ""}\n`};
     },
     tool_execution_update: (event) => ({
       content: "",
-      reasoning: normalizeDelta(event.partialResult ?? ""),
+      reasoning_content: normalizeDelta(event.partialResult ?? ""),
     }),
     tool_execution_end: (event) => {
       const name = event.toolName ?? "tool";
@@ -346,12 +358,12 @@ function progressDeltaFromEvent(event) {
         ? `\n\n⚠️ ${name} finished with an error.\n` 
         : `\n\n✅ ${name} finished.\n`;
 
-      return { content: "", reasoning: result };
+      return { content: "", reasoning_content: result };
     },
   };
 
   const handler = PROGRESS_HANDLERS[event?.type];
-  return handler ? handler(event) : { content: "", reasoning: "" };
+  return handler ? handler(event) : { content: "", reasoning_content: "" };
 }
 
 function messagesToPrompt(messages) {
