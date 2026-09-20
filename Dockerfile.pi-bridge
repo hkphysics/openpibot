@@ -6,9 +6,6 @@ WORKDIR /app
 # Set production environment to minimize dependency tree
 ENV NODE_ENV=production
 
-# Install minimal system dependencies required at build time
-RUN apk add --no-cache ca-certificates python3 py3-pip git
-
 # Copy package files and install dependencies (cached unless package*.json changes)
 COPY package*.json ./
 RUN npm ci --omit=dev --no-audit --no-fund && \
@@ -32,17 +29,15 @@ ENV NODE_ENV=production \
     HOME=/home/node
 
 # Install runtime-only dependencies
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates python3 py3-pip git
 
 # Copy installed dependencies and source from builder stage
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/src ./src
+RUN mkdir -p /workspace && chmod 777 /workspace
 
 # Run as non-root user for security
-RUN mkdir -p /workspace && chmod 755 /workspace
-
 USER node
-
 EXPOSE 11435
 
 CMD ["node", "src/server.js"]
