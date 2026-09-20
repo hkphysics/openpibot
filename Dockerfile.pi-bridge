@@ -24,7 +24,7 @@ WORKDIR /app
 
 # Production environment and app config
 ENV NODE_ENV=production \
-    HOST=127.0.0.1 \
+    HOST=0.0.0.0 \
     PORT=11435 \
     PI_WORKSPACE=/workspace \
     PI_TOOLS=read,bash,edit,write,grep,find,ls \
