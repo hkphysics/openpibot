@@ -331,8 +331,10 @@ function progressDeltaFromEvent(event) {
     compaction_start: () => ({ content: "", reasoning: "\n\n🧹 Compacting context...\n"}),
     auto_retry_start: () => ({ content: "", reasoning: "\n\n🔁 Retrying request...\n"}),
     tool_execution_start: (event) => {
-      const cmd = event?.args?.command ?? "";
-      return { content: "", reasoning: `\n\n🔧 Running tool: ${event.toolName ?? "unknown"}${cmd ? " — " + cmd : ""}...\n`};
+      const keyMap = { bash: "command", read: "path", find: "path" };
+      const key = keyMap[event.toolName];
+      const cmd = key ? event.args?.[key] : JSON.stringify(event.args ?? "");
+      return { content: "", reasoning: `\n\n🔧 Running tool: ${event.toolName ?? "unknown"}${cmd ? " — " + cmd : ""}\n`};
     },
     tool_execution_update: (event) => ({
       content: "",
