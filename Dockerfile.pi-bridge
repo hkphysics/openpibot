@@ -26,7 +26,8 @@ ENV NODE_ENV=production \
     PI_WORKSPACE=/workspace \
     PI_TOOLS=read,bash,edit,write,grep,find,ls \
     PI_SHOW_PROGRESS=true \
-    HOME=/home/node
+    HOME=/home/node \
+    PATH="${PATH}:/app/node_modules/.bin"
 
 # Install runtime-only dependencies
 RUN apk add --no-cache ca-certificates python3 py3-pip git
