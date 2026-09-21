@@ -35,6 +35,7 @@ RUN apk add --no-cache ca-certificates python3 py3-pip git
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/src ./src
 RUN mkdir -p /workspace && chmod 777 /workspace
+RUN mkdir -p /home/node/.pi && chown -R node:node /home/node/.pi
 
 # Run as non-root user for security
 USER node
