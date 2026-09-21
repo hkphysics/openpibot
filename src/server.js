@@ -176,6 +176,10 @@ async function handleBlockingCompletion(req, res, prompt) {
       if (delta) output += delta;
       const reasoningDelta = reasoningDeltaFromEvent(event, SHOW_REASONING);
       if (reasoningDelta) reasoning += reasoningDelta;
+      if (SHOW_PROGRESS && SHOW_REASONING) {
+        const progressDelta = progressDeltaFromEvent(event, SHOW_PROGRESS);
+        if (progressDelta) reasoning += progressDelta;
+      }
     });
 
     await session.prompt(prompt);
@@ -215,16 +219,9 @@ async function handleStreamingCompletion(req, res, prompt) {
     "X-Accel-Buffering": "no",
   });
 
-  const writeSse = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
   const model = req.body?.model ?? MODEL_ID;
 
-  writeSse({
-    id: completionId,
-    object: "chat.completion.chunk",
-    created: Math.floor(Date.now() / 1000),
-    model,
-    choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
-  });
+  sendChunk(res, completionId, model, { role: "assistant" });
 
   try {
     ({ session } = await createPiSession());
@@ -238,42 +235,32 @@ async function handleStreamingCompletion(req, res, prompt) {
 
       const reasoningDelta = reasoningDeltaFromEvent(event, SHOW_REASONING);
       if (reasoningDelta) {
-        writeSse({
-          id: completionId,
-          object: "chat.completion.chunk",
-          created: Math.floor(Date.now() / 1000),
-          model,
-          choices: [{ index: 0, delta: { reasoning_content: reasoningDelta }, finish_reason: null }],
-        });
+        sendChunk(res, completionId, model, { reasoning_content: reasoningDelta });
+        return;
       }
 
-      const delta = textDeltaFromEvent(event) || progressDeltaFromEvent(event, SHOW_PROGRESS);
-      if (!delta) return;
-      writeSse({
-        id: completionId,
-        object: "chat.completion.chunk",
-        created: Math.floor(Date.now() / 1000),
-        model,
-        choices: [{ index: 0, delta: { content: delta }, finish_reason: null }],
-      });
+      const delta = textDeltaFromEvent(event);
+      if (delta) {
+        sendChunk(res, completionId, model, { content: delta });
+        return;
+      }
+
+      const progressDelta = progressDeltaFromEvent(event, SHOW_PROGRESS);
+      if (progressDelta) {
+        sendChunk(res, completionId, model, SHOW_REASONING ? { reasoning_content: progressDelta } : { content: progressDelta });
+      }
     });
 
     await session.prompt(prompt);
 
     if (!res.writableEnded) {
-      writeSse({
-        id: completionId,
-        object: "chat.completion.chunk",
-        created: Math.floor(Date.now() / 1000),
-        model,
-        choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-      });
+      sendChunk(res, completionId, model, {}, "stop");
       res.write("data: [DONE]\n\n");
       res.end();
     }
   } catch (error) {
     if (!res.writableEnded) {
-      writeSse({ error: { message: errorMessage(error), type: "pi_bridge_error" } });
+      writeSse(res, { error: { message: errorMessage(error), type: "pi_bridge_error" } });
       res.write("data: [DONE]\n\n");
       res.end();
     }
@@ -402,6 +389,20 @@ function sendJsonError(res, error) {
 
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function writeSse(res, data) {
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+function sendChunk(res, id, model, delta, finishReason) {
+  writeSse(res, {
+    id,
+    object: "chat.completion.chunk",
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [{ index: 0, delta, finish_reason: finishReason ?? null }],
+  });
 }
 
 app.listen(PORT, HOST, () => {
