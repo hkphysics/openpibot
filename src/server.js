@@ -235,23 +235,15 @@ async function handleStreamingCompletion(req, res, prompt) {
     const textDeltaFromEvent = createTextDeltaHandler();
     session.subscribe((event) => {
       const delta = textDeltaFromEvent(event);
-      const progress = progressDeltaFromEvent(event);
-	if (res.writableEnded) return;
-
-	// Separate deltas into individual list items
-      for (const source of [delta, progress]) {
-        for (const [key, value] of Object.entries(source)) {
-          if (value) {
-            writeSse({
-              id: completionId,
-              object: "chat.completion.chunk",
-              created: Math.floor(Date.now() / 1000),
-              model,
-              choices: [{ index: 0, delta: { [key]: value }, finish_reason: null }],
-            });
-          }
-        }
-      }
+      if (res.writableEnded) return;
+      if (Object.keys(obj).length === 0) return;
+      writeSse({
+          id: completionId,
+          object: "chat.completion.chunk",
+          created: Math.floor(Date.now() / 1000),
+          model,
+          choices: [{ index: 0, delta: delta, finish_reason: null }],
+      });
     });
 
     await session.prompt(prompt);
@@ -319,7 +311,7 @@ function createTextDeltaHandler() {
       return {};
     }
 
-    return {};
+    return progressDeltaFromEvent(event);
   };
 }
 
