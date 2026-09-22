@@ -24,8 +24,8 @@ RUN apt-get update \
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY --chown=node:node src ./src
 
-RUN mkdir -p /workspace /home/node/.pi/agent \
-    && chown -R node:node /workspace /home/node/.pi
+RUN mkdir -p /workspace /home/node \
+    && chown -R node:node /workspace /home/node
 
 EXPOSE 11435
 
